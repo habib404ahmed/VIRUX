@@ -10,6 +10,7 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app'
 import { getAuth, type Auth } from 'firebase/auth'
 import { getFirestore, type Firestore } from 'firebase/firestore'
+import { getAnalytics, isSupported, type Analytics } from 'firebase/analytics'
 
 // ─── Environment variable validation ────────────────────────
 
@@ -31,7 +32,7 @@ if (missingEnvVars.length > 0) {
     `[VIRUX Firebase Configuration Notice]\n` +
     `The following required environment variable(s) are missing or set to placeholder defaults:\n` +
     missingEnvVars.map((v) => `  - ${v}`).join('\n') + '\n\n' +
-    `Please copy 'web-dashboard/.env.example' to 'web-dashboard/.env.local' and supply your Firebase virux-504a5 project credentials.`
+    `Please configure your Firebase virux-504a5 project credentials in .env.local or Vercel Environment Variables.`
   )
 }
 
@@ -42,23 +43,25 @@ const firebaseConfig = {
   authDomain:        (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string) || 'virux-504a5.firebaseapp.com',
   projectId:         (import.meta.env.VITE_FIREBASE_PROJECT_ID as string) || 'virux-504a5',
   storageBucket:     (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) || 'virux-504a5.firebasestorage.app',
-  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || '',
-  appId:             (import.meta.env.VITE_FIREBASE_APP_ID as string) || '',
+  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || '1000533612172',
+  appId:             (import.meta.env.VITE_FIREBASE_APP_ID as string) || '1:1000533612172:web:b8ee32cce8a32abc92cda9',
+  measurementId:     (import.meta.env.VITE_FIREBASE_MEASUREMENT_ID as string) || 'G-DF3FS76GZV',
 }
 
 // ─── Singleton initialization ────────────────────────────────
-// In Phase 2 UI/UX preview, if VITE_FIREBASE_API_KEY is not configured yet,
-// log a clear warning and export null instances rather than crashing the UI bundle.
+// Initializes Firebase only once, reusing existing instance if present.
+// If API key is not yet supplied, avoids crashing so UI/UX remains inspectable.
 
 function getOrInitializeApp(): FirebaseApp | null {
-  if (getApps().length > 0) {
-    return getApps()[0]!
+  const existingApps = getApps()
+  if (existingApps.length > 0) {
+    return existingApps[0]!
   }
 
   if (!firebaseConfig.apiKey) {
     console.warn(
       `[VIRUX Firebase Notice] 'VITE_FIREBASE_API_KEY' is not configured.\n` +
-      `Running in UI/UX Preview Mode. Real backend services will connect once .env.local is supplied in Phase 3.`
+      `Running in UI/UX Preview Mode. Real backend services connect when VITE_FIREBASE_API_KEY is supplied.`
     )
     return null
   }
@@ -69,12 +72,24 @@ function getOrInitializeApp(): FirebaseApp | null {
 let app: FirebaseApp | null = null
 let authInstance: Auth | null = null
 let dbInstance: Firestore | null = null
+let analyticsInstance: Analytics | null = null
 
 try {
   app = getOrInitializeApp()
   if (app) {
     authInstance = getAuth(app)
     dbInstance = getFirestore(app)
+
+    // Safely initialize Firebase Analytics only in supported browser environments
+    if (typeof window !== 'undefined' && firebaseConfig.measurementId) {
+      isSupported().then((supported) => {
+        if (supported && app) {
+          analyticsInstance = getAnalytics(app)
+        }
+      }).catch((err) => {
+        console.warn('[VIRUX Firebase Analytics Notice]', err)
+      })
+    }
   }
 } catch (err) {
   console.warn('[VIRUX Firebase Initialization Warning]', err)
@@ -82,16 +97,19 @@ try {
 
 export const auth: Auth | null = authInstance
 export const db: Firestore | null = dbInstance
+export const analytics: Analytics | null = analyticsInstance
 
 export const isFirebaseConfigured: boolean = Boolean(
-  firebaseConfig.apiKey && firebaseConfig.apiKey !== 'your_api_key_here'
+  firebaseConfig.apiKey &&
+  firebaseConfig.apiKey !== 'your_api_key_here' &&
+  firebaseConfig.apiKey.length > 10
 )
 
 export function requireAuth(): Auth {
   if (!authInstance) {
     throw new Error(
       `[VIRUX Firebase Error] Firebase Authentication is unavailable.\n` +
-      `Ensure 'web-dashboard/.env.local' is created with valid 'VITE_FIREBASE_API_KEY' credentials for virux-504a5.`
+      `Ensure 'VITE_FIREBASE_API_KEY' is configured with valid credentials for virux-504a5.`
     )
   }
   return authInstance
@@ -101,7 +119,7 @@ export function requireDb(): Firestore {
   if (!dbInstance) {
     throw new Error(
       `[VIRUX Firebase Error] Cloud Firestore is unavailable.\n` +
-      `Ensure 'web-dashboard/.env.local' is created with valid credentials for virux-504a5.`
+      `Ensure 'VITE_FIREBASE_API_KEY' is configured with valid credentials for virux-504a5.`
     )
   }
   return dbInstance
