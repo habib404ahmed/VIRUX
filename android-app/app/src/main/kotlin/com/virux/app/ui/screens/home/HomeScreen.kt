@@ -1,6 +1,7 @@
 package com.virux.app.ui.screens.home
 
 import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.media.projection.MediaProjectionManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -32,7 +33,11 @@ import com.virux.app.ui.theme.ViruxTheme
 @Composable
 fun HomeScreen(
     onNavigate: (String) -> Unit,
-    viewModel: HomeViewModel = viewModel()
+    viewModel: HomeViewModel = viewModel(
+        factory = HomeViewModel.provideFactory(
+            LocalContext.current.applicationContext as Application
+        )
+    )
 ) {
     val context = LocalContext.current
     val colors = ViruxTheme.colors

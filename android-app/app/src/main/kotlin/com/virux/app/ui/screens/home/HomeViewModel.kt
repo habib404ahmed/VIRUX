@@ -4,6 +4,8 @@ import android.app.Application
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.virux.app.data.model.SignalingSession
 import com.virux.app.data.model.SignalingState
@@ -28,13 +30,24 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class HomeViewModel(
+class HomeViewModel @JvmOverloads constructor(
     application: Application,
     private val signalingRepository: SignalingRepository = SignalingRepositoryImpl()
 ) : AndroidViewModel(application) {
 
     companion object {
         private const val TAG = "VIRUX_HomeVM"
+
+        fun provideFactory(application: Application): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    if (modelClass.isAssignableFrom(HomeViewModel::class.java)) {
+                        return HomeViewModel(application) as T
+                    }
+                    throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
+                }
+            }
     }
 
     private val deviceIdProvider = DeviceIdProviderImpl(application)
