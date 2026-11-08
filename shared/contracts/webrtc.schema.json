@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ViruxWebRTCSignaling",
+  "description": "VIRUX WebRTC Signaling Protocol Specification for Cloud Firestore",
+  "definitions": {
+    "SdpPayload": {
+      "type": "object",
+      "required": ["type", "sdp"],
+      "properties": {
+        "type": { "type": "string", "enum": ["offer", "answer"] },
+        "sdp": { "type": "string", "maxLength": 65536 }
+      },
+      "additionalProperties": false
+    },
+    "IceCandidateItem": {
+      "type": "object",
+      "required": ["candidate"],
+      "properties": {
+        "candidate": { "type": "string" },
+        "sdpMid": { "type": ["string", "null"] },
+        "sdpMLineIndex": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "SignalingSession": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "ownerUid",
+        "deviceId",
+        "initiator",
+        "sessionType",
+        "status",
+        "protocolVersion",
+        "createdAt",
+        "updatedAt",
+        "expiresAt"
+      ],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "initiator": { "type": "string", "enum": ["web", "android"] },
+        "sessionType": { "type": "string", "enum": ["screen_mirror", "file_transfer"] },
+        "status": {
+          "type": "string",
+          "enum": [
+            "created",
+            "offer_created",
+            "answer_created",
+            "connecting",
+            "connected",
+            "closed",
+            "revoked",
+            "expired"
+          ]
+        },
+        "protocolVersion": { "type": "string", "enum": ["1.0"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "offer": { "$ref": "#/definitions/SdpPayload" },
+        "answer": { "$ref": "#/definitions/SdpPayload" }
+      },
+      "additionalProperties": false
+    },
+    "IceCandidateBatch": {
+      "type": "object",
+      "required": [
+        "batchId",
+        "sessionId",
+        "sender",
+        "sequenceNumber",
+        "candidates",
+        "isComplete",
+        "createdAt"
+      ],
+      "properties": {
+        "batchId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "sender": { "type": "string", "enum": ["web", "android"] },
+        "sequenceNumber": { "type": "integer", "minimum": 0 },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/IceCandidateItem" },
+          "maxItems": 25
+        },
+        "isComplete": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

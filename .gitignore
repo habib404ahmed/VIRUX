@@ -1,0 +1,68 @@
+# ============================================================
+# VIRUX Monorepo — .gitignore
+# ============================================================
+
+# ─── Android ────────────────────────────────────────────────
+android-app/.gradle/
+android-app/local.properties
+android-app/app/build/
+android-app/build/
+android-app/**/*.iml
+android-app/.idea/
+android-app/.DS_Store
+android-app/captures/
+android-app/keystore/
+*.jks
+*.keystore
+
+# Firebase — NEVER commit google-services.json if it contains
+# sensitive project credentials. Keep it out of public repos.
+# For this private monorepo we track it; uncomment the line
+# below if you later open-source the project.
+# android-app/app/google-services.json
+
+# ─── Dependencies ───────────────────────────────────────────
+node_modules/
+web-dashboard/node_modules/
+web-dashboard/dist/
+web-dashboard/.env.local
+web-dashboard/.env.*.local
+web-dashboard/.DS_Store
+
+# Vite cache
+web-dashboard/.vite/
+
+# ─── Firebase / General ─────────────────────────────────────
+firebase/.firebaserc
+.firebase/
+*.log
+
+# ─── Environment & Secrets ──────────────────────────────────
+.env
+.env.local
+.env.production
+.env.staging
+*.pem
+service-account*.json
+*-credentials.json
+*-secret.json
+
+# ─── OS & Editors ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.vscode/settings.json
+
+# ─── Misc ───────────────────────────────────────────────────
+*.tmp
+*.bak
+*.cache
+*.tsbuildinfo
+

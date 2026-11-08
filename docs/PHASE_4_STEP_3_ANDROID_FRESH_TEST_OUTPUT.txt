@@ -1,0 +1,61 @@
+================================================================================
+VIRUX Phase 4, Step 3 — Fresh Android Debug Unit Test Execution Output
+================================================================================
+Command Executed:
+Set-Location "C:\Users\HABIB\Videos\Hacking\VIRUX\android-app"
+.\gradlew.bat testDebugUnitTest --rerun-tasks
+
+Execution Timestamp: 2026-11-08T09:24:47+05:30 (November 8, 2026)
+Execution Type: FRESH EXECUTION (--rerun-tasks, zero task cache reuse)
+Java Runtime: Eclipse Adoptium JDK 21.0.12 (HotSpot 64-Bit Server VM)
+Gradle Version: Gradle 8.11.1
+--------------------------------------------------------------------------------
+
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:generateDebugBuildConfig
+> Task :app:generateDebugResValues
+> Task :app:processDebugGoogleServices
+> Task :app:checkDebugAarMetadata
+> Task :app:mapDebugSourceSetPaths
+> Task :app:generateDebugResources
+> Task :app:packageDebugResources
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksDebug
+> Task :app:parseDebugLocalResources
+> Task :app:mergeDebugResources
+> Task :app:processDebugMainManifest
+> Task :app:processDebugManifest
+> Task :app:preDebugUnitTestBuild UP-TO-DATE
+> Task :app:javaPreCompileDebug
+> Task :app:javaPreCompileDebugUnitTest
+> Task :app:processDebugManifestForPackage
+> Task :app:processDebugResources
+> Task :app:compileDebugKotlin
+> Task :app:compileDebugJavaWithJavac
+> Task :app:processDebugJavaRes
+> Task :app:bundleDebugClassesToRuntimeJar
+> Task :app:bundleDebugClassesToCompileJar
+> Task :app:compileDebugUnitTestKotlin
+> Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :app:processDebugUnitTestJavaRes
+> Task :app:testDebugUnitTest
+
+BUILD SUCCESSFUL in 50s
+25 actionable tasks: 25 executed
+
+--------------------------------------------------------------------------------
+Unit Test Results Summary (android-app/app/build/reports/tests/testDebugUnitTest/):
+- Total Tests: 6
+- Passed: 6
+- Failed: 0
+- Skipped / Ignored: 0
+- Success Rate: 100%
+- Duration: 0.195s
+
+Detailed Test Classes:
+1. com.virux.app.ChallengeSerializationTest (3 tests, 0 failures, 0 ignored, 0.180s)
+2. com.virux.app.QRPayloadParsingTest (3 tests, 0 failures, 0 ignored, 0.015s)
+================================================================================
+

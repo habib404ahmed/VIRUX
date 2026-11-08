@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ViruxDevice",
+  "type": "object",
+  "required": [
+    "deviceId",
+    "ownerId",
+    "name",
+    "model",
+    "manufacturer",
+    "androidVersion",
+    "sdkVersion",
+    "appVersion",
+    "isOnline",
+    "lastSeenAt",
+    "registeredAt"
+  ],
+  "properties": {
+    "deviceId": { "type": "string" },
+    "ownerId": { "type": "string" },
+    "name": { "type": "string" },
+    "model": { "type": "string" },
+    "manufacturer": { "type": "string" },
+    "androidVersion": { "type": "string" },
+    "sdkVersion": { "type": "integer", "minimum": 26 },
+    "appVersion": { "type": "string" },
+    "fcmToken": { "type": ["string", "null"] },
+    "isOnline": { "type": "boolean" },
+    "lastSeenAt": { "type": "string", "format": "date-time" },
+    "registeredAt": { "type": "string", "format": "date-time" },
+    "batteryLevel": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "isCharging": { "type": "boolean" },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "fileTransfer": { "type": "boolean" },
+        "notifications": { "type": "boolean" },
+        "clipboard": { "type": "boolean" },
+        "screenMirror": { "type": "boolean" }
+      }
+    }
+  }
+}
+

@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ViruxUser",
+  "type": "object",
+  "required": ["uid", "email", "displayName", "createdAt", "updatedAt", "plan"],
+  "properties": {
+    "uid": { "type": "string" },
+    "email": { "type": "string", "format": "email" },
+    "displayName": { "type": "string" },
+    "photoURL": { "type": ["string", "null"] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "plan": { "type": "string", "enum": ["free", "pro"] },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "notificationsEnabled": { "type": "boolean" },
+        "theme": { "type": "string" },
+        "language": { "type": "string" }
+      }
+    }
+  }
+}
+

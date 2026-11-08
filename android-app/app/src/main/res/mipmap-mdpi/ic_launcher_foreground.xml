@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    VIRUX — Adaptive launcher icon (foreground)
+    Replace with actual branded icon in Phase 2 or later.
+    Current icon: simple vector circle as placeholder.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#6366F1"
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0" />
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M38,42 L54,30 L70,42 L70,66 L54,78 L38,66 Z"
+        android:strokeColor="#06B6D4"
+        android:strokeWidth="2" />
+</vector>
+

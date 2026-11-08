@@ -1,0 +1,452 @@
+rules_version = '2';
+
+// ============================================================
+// VIRUX Firestore Security Rules — Phase 4: Hardened Pairing & Device Management
+//
+// Security Strategy:
+// 1. Users Collection (/users/{userId}):
+//    - Owner-only access (request.auth.uid == userId).
+//    - Strictly validated profile creation and restricted profile updates.
+//    - Immutable identity fields (uid, email, provider, createdAt, accountStatus).
+//    - Profile deletion denied (prevents orphaned state).
+//
+// 2. Pairing Sessions Subcollection (/users/{userId}/pairingSessions/{sessionId}):
+//    - Strict schema: required fields explicitly verified with hasAll() and hasOnly().
+//    - 6-digit numeric PIN format and 256-bit hex challenge format.
+//    - Bound expiry time (<= request.time + 10m30s).
+//    - Atomic single-use claim transition (pending -> claimed) or revocation (pending -> revoked).
+//    - Enforced atomic transaction coupling with device registration using getAfter().
+//    - Immutability of core session parameters (ownerUid, sessionId, pin, challengeNonce, createdAt, expiresAt).
+//    - Validates permitted Base64 characters (^[A-Za-z0-9+/=]+$) and length bounds (64 <= size <= 256)
+//      for public key and signature. (Note: Firestore rules enforce character set and string length bounds;
+//      cryptographic ECDSA P-256 signature verification is performed client-side by the Web Dashboard via Web Crypto API).
+//
+// 3. Registered Devices Subcollection (/users/{userId}/devices/{deviceId}):
+//    - Cannot be created independently: must be created atomically alongside an unexpired,
+//      pending pairing session claim belonging to the same owner UID (validated via getAfter()).
+//    - Strict schema: required fields explicitly verified with hasAll() and hasOnly().
+//    - Min/max length bounds on manufacturer, model, androidVersion, appVersion (1 <= size <= 50/20).
+//    - Strict validation of capabilities map (keys strictly constrained, values boolean).
+//    - Permitted Base64 characters (^[A-Za-z0-9+/=]+$) and bounded length (64 <= size <= 256) for public key.
+//    - Immutable hardware identity fields (deviceId, ownerUid, devicePublicKey, createdAt, pairingSessionId, hardware specs).
+//    - Revocation Protection:
+//        * Revoked devices (revokedAt != null) are strictly forbidden from sending heartbeat or renaming.
+//        * Revocation cannot be undone or reversed (transitions only from null -> serverTimestamp).
+//    - Scoped updates:
+//        * Rename: deviceName only (1-50 chars) on active devices.
+//        * Heartbeat/telemetry: lastSeen (server timestamp), batteryLevel (0-100), isCharging (bool), networkType ('wifi'|'cellular'|'ethernet'|'none') on active devices.
+//        * Soft revocation: revokedAt (server timestamp) on active devices.
+//    - Explicit unpair / hard deletion permitted by owner.
+//
+// 4. WebRTC Signaling Subcollection (/users/{userId}/devices/{deviceId}/signaling/{sessionId}):
+//    - Strictly bound to parent device: device must exist and not be revoked (revokedAt == null).
+//    - Strict schema: required fields verified with hasAll() and hasOnly().
+//    - Strict TTL bound: expiresAt must be a Timestamp within 120s of creation (request.time < expiresAt <= request.time + 120s).
+//    - Strict forward-only state machine: created -> offer_created -> answer_created -> connecting -> connected -> closed/revoked/expired.
+//    - Terminal states (closed, revoked, expired) are locked and cannot be reopened or mutated.
+//    - Bound SDP payloads: offer/answer must have valid type and sdp string <= 64KB (65536 chars).
+//    - Subcollection candidateBatches/{batchId}:
+//        * Append-only ICE candidate batching (allow update, delete: if false).
+//        * Bounded batches: maximum 25 candidates per batch.
+//        * Inherits parent device validity, unexpired session TTL, and non-terminal status checks.
+//
+// 5. Default Lock:
+//    - Catch-all rule denying all reads/writes to any other collection.
+// ============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Reusable Auth Helpers ───────────────────────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // ─── Users Collection (Phase 3 Hardened Profile) ───────────
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasAll([
+          'uid', 'email', 'accountStatus', 'provider', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'photoUrl', 'accountStatus', 'provider', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && (request.resource.data.email is string && request.resource.data.email.size() > 3)
+        && (!('displayName' in request.resource.data) || request.resource.data.displayName == null || (request.resource.data.displayName is string && request.resource.data.displayName.size() <= 100))
+        && (!('photoUrl' in request.resource.data) || request.resource.data.photoUrl == null || (request.resource.data.photoUrl is string && request.resource.data.photoUrl.size() <= 500))
+        && request.resource.data.accountStatus == 'active'
+        && (request.resource.data.provider in ['password', 'google.com'])
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoUrl', 'updatedAt'])
+        && (!('displayName' in request.resource.data) || request.resource.data.displayName == null || (request.resource.data.displayName is string && request.resource.data.displayName.size() <= 100))
+        && (!('photoUrl' in request.resource.data) || request.resource.data.photoUrl == null || (request.resource.data.photoUrl is string && request.resource.data.photoUrl.size() <= 500))
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.provider == resource.data.provider
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.accountStatus == resource.data.accountStatus;
+
+      allow delete: if false;
+
+      // ─── Subcollection: Pairing Sessions ─────────────────────
+      match /pairingSessions/{sessionId} {
+        allow read: if isOwner(userId);
+
+        // Web Dashboard creates a pending pairing session
+        allow create: if isOwner(userId)
+          && request.resource.data.keys().hasAll([
+            'sessionId', 'ownerUid', 'pin', 'challengeNonce',
+            'status', 'createdAt', 'expiresAt'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'sessionId', 'ownerUid', 'pin', 'challengeNonce',
+            'status', 'createdAt', 'expiresAt'
+          ])
+          && request.resource.data.sessionId == sessionId
+          && request.resource.data.ownerUid == userId
+          && request.resource.data.pin is string
+          && request.resource.data.pin.size() == 6
+          && request.resource.data.pin.matches('^[0-9]{6}$')
+          && request.resource.data.challengeNonce is string
+          && request.resource.data.challengeNonce.size() == 64
+          && request.resource.data.challengeNonce.matches('^[0-9a-fA-F]{64}$')
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.expiresAt is timestamp
+          && request.resource.data.expiresAt > request.time
+          && request.resource.data.expiresAt <= request.time + duration.value(630, 's');
+
+        // Android claims session or Web user revokes session
+        allow update: if isOwner(userId)
+          && resource.data.status == 'pending'
+          && request.time < resource.data.expiresAt
+          // Immutable core session fields
+          && request.resource.data.sessionId == resource.data.sessionId
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.pin == resource.data.pin
+          && request.resource.data.challengeNonce == resource.data.challengeNonce
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.expiresAt == resource.data.expiresAt
+          && (
+            // Transition 1: Claimed atomically by Android Hardware
+            (
+              request.resource.data.status == 'claimed'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'status', 'claimedByDeviceId', 'devicePublicKey', 'signature', 'claimedAt'
+              ])
+              && request.resource.data.claimedAt == request.time
+              && request.resource.data.claimedByDeviceId is string
+              && request.resource.data.claimedByDeviceId.size() >= 1
+              && request.resource.data.claimedByDeviceId.size() <= 128
+              && request.resource.data.devicePublicKey is string
+              && request.resource.data.devicePublicKey.size() >= 64
+              && request.resource.data.devicePublicKey.size() <= 256
+              && request.resource.data.devicePublicKey.matches('^[A-Za-z0-9+/=]+$')
+              && request.resource.data.signature is string
+              && request.resource.data.signature.size() >= 64
+              && request.resource.data.signature.size() <= 256
+              && request.resource.data.signature.matches('^[A-Za-z0-9+/=]+$')
+              // Atomic transaction coupling with device creation via getAfter
+              && existsAfter(/databases/$(database)/documents/users/$(userId)/devices/$(request.resource.data.claimedByDeviceId))
+              && getAfter(/databases/$(database)/documents/users/$(userId)/devices/$(request.resource.data.claimedByDeviceId)).data.deviceId == request.resource.data.claimedByDeviceId
+              && getAfter(/databases/$(database)/documents/users/$(userId)/devices/$(request.resource.data.claimedByDeviceId)).data.ownerUid == userId
+              && getAfter(/databases/$(database)/documents/users/$(userId)/devices/$(request.resource.data.claimedByDeviceId)).data.devicePublicKey == request.resource.data.devicePublicKey
+              && getAfter(/databases/$(database)/documents/users/$(userId)/devices/$(request.resource.data.claimedByDeviceId)).data.pairingSessionId == sessionId
+              && getAfter(/databases/$(database)/documents/users/$(userId)/devices/$(request.resource.data.claimedByDeviceId)).data.createdAt == request.time
+            )
+            ||
+            // Transition 2: Revoked by Web user (session status transitions to 'revoked')
+            (
+              request.resource.data.status == 'revoked'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'revokedAt'])
+              && request.resource.data.revokedAt == request.time
+            )
+          );
+
+        allow delete: if isOwner(userId);
+      }
+
+      // ─── Subcollection: Registered Devices ───────────────────
+      match /devices/{deviceId} {
+        allow read: if isOwner(userId);
+
+        // Android creates device atomically coupled to pairing session claim
+        allow create: if isOwner(userId)
+          && request.resource.data.keys().hasAll([
+            'deviceId', 'ownerUid', 'deviceName', 'deviceType', 'manufacturer',
+            'model', 'androidVersion', 'sdkVersion', 'appVersion', 'devicePublicKey',
+            'batteryLevel', 'isCharging', 'networkType', 'capabilities',
+            'createdAt', 'lastSeen', 'revokedAt', 'pairingSessionId'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'deviceId', 'ownerUid', 'deviceName', 'deviceType', 'manufacturer',
+            'model', 'androidVersion', 'sdkVersion', 'appVersion', 'devicePublicKey',
+            'batteryLevel', 'isCharging', 'networkType', 'capabilities',
+            'createdAt', 'lastSeen', 'revokedAt', 'pairingSessionId'
+          ])
+          && request.resource.data.deviceId == deviceId
+          && request.resource.data.ownerUid == userId
+          && request.resource.data.deviceName is string
+          && request.resource.data.deviceName.size() >= 1
+          && request.resource.data.deviceName.size() <= 50
+          && request.resource.data.deviceType in ['phone', 'tablet', 'foldable', 'wearable']
+          && request.resource.data.manufacturer is string
+          && request.resource.data.manufacturer.size() >= 1
+          && request.resource.data.manufacturer.size() <= 50
+          && request.resource.data.model is string
+          && request.resource.data.model.size() >= 1
+          && request.resource.data.model.size() <= 50
+          && request.resource.data.androidVersion is string
+          && request.resource.data.androidVersion.size() >= 1
+          && request.resource.data.androidVersion.size() <= 20
+          && request.resource.data.sdkVersion is int
+          && request.resource.data.sdkVersion >= 21
+          && request.resource.data.appVersion is string
+          && request.resource.data.appVersion.size() >= 1
+          && request.resource.data.appVersion.size() <= 20
+          && request.resource.data.devicePublicKey is string
+          && request.resource.data.devicePublicKey.size() >= 64
+          && request.resource.data.devicePublicKey.size() <= 256
+          && request.resource.data.devicePublicKey.matches('^[A-Za-z0-9+/=]+$')
+          && request.resource.data.batteryLevel is int
+          && request.resource.data.batteryLevel >= 0
+          && request.resource.data.batteryLevel <= 100
+          && request.resource.data.isCharging is bool
+          && request.resource.data.networkType in ['wifi', 'cellular', 'ethernet', 'none']
+          && request.resource.data.capabilities is map
+          && request.resource.data.capabilities.keys().hasOnly(['fileTransfer', 'screenMirror', 'notifications', 'clipboard'])
+          && (!('fileTransfer' in request.resource.data.capabilities) || request.resource.data.capabilities.fileTransfer is bool)
+          && (!('screenMirror' in request.resource.data.capabilities) || request.resource.data.capabilities.screenMirror is bool)
+          && (!('notifications' in request.resource.data.capabilities) || request.resource.data.capabilities.notifications is bool)
+          && (!('clipboard' in request.resource.data.capabilities) || request.resource.data.capabilities.clipboard is bool)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.lastSeen == request.time
+          && request.resource.data.revokedAt == null
+          && request.resource.data.pairingSessionId is string
+          && request.resource.data.pairingSessionId.size() > 0
+          // Document must not already exist
+          && !exists(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId))
+          // Atomic transaction coupling with pairing session claim via getAfter
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/pairingSessions/$(request.resource.data.pairingSessionId))
+          && getAfter(/databases/$(database)/documents/users/$(userId)/pairingSessions/$(request.resource.data.pairingSessionId)).data.status == 'claimed'
+          && getAfter(/databases/$(database)/documents/users/$(userId)/pairingSessions/$(request.resource.data.pairingSessionId)).data.claimedByDeviceId == deviceId
+          && getAfter(/databases/$(database)/documents/users/$(userId)/pairingSessions/$(request.resource.data.pairingSessionId)).data.ownerUid == userId
+          && getAfter(/databases/$(database)/documents/users/$(userId)/pairingSessions/$(request.resource.data.pairingSessionId)).data.devicePublicKey == request.resource.data.devicePublicKey
+          && getAfter(/databases/$(database)/documents/users/$(userId)/pairingSessions/$(request.resource.data.pairingSessionId)).data.claimedAt == request.time
+          && request.time < getAfter(/databases/$(database)/documents/users/$(userId)/pairingSessions/$(request.resource.data.pairingSessionId)).data.expiresAt;
+
+        // Narrowly scoped device updates
+        allow update: if isOwner(userId)
+          // Immutable device identity fields
+          && request.resource.data.deviceId == resource.data.deviceId
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.devicePublicKey == resource.data.devicePublicKey
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.manufacturer == resource.data.manufacturer
+          && request.resource.data.model == resource.data.model
+          && request.resource.data.deviceType == resource.data.deviceType
+          && request.resource.data.androidVersion == resource.data.androidVersion
+          && request.resource.data.sdkVersion == resource.data.sdkVersion
+          && request.resource.data.appVersion == resource.data.appVersion
+          && (!('pairingSessionId' in resource.data) || request.resource.data.pairingSessionId == resource.data.pairingSessionId)
+          && (
+            // Operation 1: User renames device (allowed only on active devices)
+            (
+              resource.data.revokedAt == null
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deviceName'])
+              && request.resource.data.deviceName is string
+              && request.resource.data.deviceName.size() >= 1
+              && request.resource.data.deviceName.size() <= 50
+            )
+            ||
+            // Operation 2: Android periodic telemetry / heartbeat (allowed only on active devices)
+            (
+              resource.data.revokedAt == null
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'lastSeen', 'batteryLevel', 'isCharging', 'networkType'
+              ])
+              && request.resource.data.lastSeen == request.time
+              && request.resource.data.batteryLevel is int
+              && request.resource.data.batteryLevel >= 0
+              && request.resource.data.batteryLevel <= 100
+              && request.resource.data.isCharging is bool
+              && request.resource.data.networkType in ['wifi', 'cellular', 'ethernet', 'none']
+            )
+            ||
+            // Operation 3: Revocation marker on unpair (active device transitions to revoked; cannot be undone)
+            (
+              resource.data.revokedAt == null
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revokedAt'])
+              && request.resource.data.revokedAt == request.time
+            )
+          );
+
+        // Explicit unpair / hard deletion by owner
+        allow delete: if isOwner(userId);
+
+        // ─── Subcollection: WebRTC Signaling Sessions ────────────
+        match /signaling/{sessionId} {
+          allow read: if isOwner(userId);
+
+          // Creation of signaling session
+          allow create: if isOwner(userId)
+            && exists(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId))
+            && get(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId)).data.revokedAt == null
+            && request.resource.data.keys().hasAll([
+              'sessionId', 'ownerUid', 'deviceId', 'initiator', 'sessionType',
+              'status', 'protocolVersion', 'createdAt', 'updatedAt', 'expiresAt'
+            ])
+            && request.resource.data.keys().hasOnly([
+              'sessionId', 'ownerUid', 'deviceId', 'initiator', 'sessionType',
+              'status', 'protocolVersion', 'createdAt', 'updatedAt', 'expiresAt',
+              'offer', 'answer'
+            ])
+            && request.resource.data.sessionId == sessionId
+            && request.resource.data.ownerUid == userId
+            && request.resource.data.deviceId == deviceId
+            && request.resource.data.initiator in ['web', 'android']
+            && request.resource.data.sessionType in ['screen_mirror', 'file_transfer']
+            && request.resource.data.status in ['created', 'offer_created']
+            && request.resource.data.protocolVersion is string
+            && request.resource.data.protocolVersion == '1.0'
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.updatedAt == request.time
+            && request.resource.data.expiresAt is timestamp
+            && request.resource.data.expiresAt > request.time
+            && request.resource.data.expiresAt <= request.time + duration.value(120, 's')
+            && (
+              !('offer' in request.resource.data)
+              || (
+                request.resource.data.offer is map
+                && request.resource.data.offer.keys().hasAll(['type', 'sdp'])
+                && request.resource.data.offer.type == 'offer'
+                && request.resource.data.offer.sdp is string
+                && request.resource.data.offer.sdp.size() > 0
+                && request.resource.data.offer.sdp.size() <= 65536
+              )
+            )
+            && (
+              !('answer' in request.resource.data)
+              || (
+                request.resource.data.answer is map
+                && request.resource.data.answer.keys().hasAll(['type', 'sdp'])
+                && request.resource.data.answer.type == 'answer'
+                && request.resource.data.answer.sdp is string
+                && request.resource.data.answer.sdp.size() > 0
+                && request.resource.data.answer.sdp.size() <= 65536
+              )
+            );
+
+          // Update of signaling session
+          allow update: if isOwner(userId)
+            && exists(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId))
+            && get(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId)).data.revokedAt == null
+            && request.resource.data.sessionId == resource.data.sessionId
+            && request.resource.data.ownerUid == resource.data.ownerUid
+            && request.resource.data.deviceId == resource.data.deviceId
+            && request.resource.data.initiator == resource.data.initiator
+            && request.resource.data.sessionType == resource.data.sessionType
+            && request.resource.data.protocolVersion == resource.data.protocolVersion
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.expiresAt == resource.data.expiresAt
+            && request.resource.data.updatedAt == request.time
+            // Must not be expired
+            && request.time < resource.data.expiresAt
+            // Terminal states cannot be updated
+            && !(resource.data.status in ['closed', 'revoked', 'expired'])
+            // State transition validation
+            && (
+              // created -> offer_created
+              (
+                resource.data.status == 'created'
+                && request.resource.data.status == 'offer_created'
+                && request.resource.data.offer is map
+                && request.resource.data.offer.keys().hasAll(['type', 'sdp'])
+                && request.resource.data.offer.type == 'offer'
+                && request.resource.data.offer.sdp is string
+                && request.resource.data.offer.sdp.size() > 0
+                && request.resource.data.offer.sdp.size() <= 65536
+              )
+              ||
+              // offer_created -> answer_created
+              (
+                resource.data.status == 'offer_created'
+                && request.resource.data.status == 'answer_created'
+                && request.resource.data.answer is map
+                && request.resource.data.answer.keys().hasAll(['type', 'sdp'])
+                && request.resource.data.answer.type == 'answer'
+                && request.resource.data.answer.sdp is string
+                && request.resource.data.answer.sdp.size() > 0
+                && request.resource.data.answer.sdp.size() <= 65536
+              )
+              ||
+              // answer_created -> connecting
+              (
+                resource.data.status == 'answer_created'
+                && request.resource.data.status == 'connecting'
+              )
+              ||
+              // connecting -> connected
+              (
+                resource.data.status == 'connecting'
+                && request.resource.data.status == 'connected'
+              )
+              ||
+              // Transition to terminal state (closed, revoked, expired)
+              (
+                request.resource.data.status in ['closed', 'revoked', 'expired']
+              )
+            );
+
+          allow delete: if isOwner(userId);
+
+          // ─── Subcollection: Candidate Batches ───────────────────
+          match /candidateBatches/{batchId} {
+            allow read: if isOwner(userId);
+
+            allow create: if isOwner(userId)
+              && exists(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId))
+              && get(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId)).data.revokedAt == null
+              && exists(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId)/signaling/$(sessionId))
+              && request.time < get(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId)/signaling/$(sessionId)).data.expiresAt
+              && !(get(/databases/$(database)/documents/users/$(userId)/devices/$(deviceId)/signaling/$(sessionId)).data.status in ['closed', 'revoked', 'expired'])
+              && request.resource.data.keys().hasAll([
+                'batchId', 'sessionId', 'sender', 'sequenceNumber', 'candidates', 'isComplete', 'createdAt'
+              ])
+              && request.resource.data.keys().hasOnly([
+                'batchId', 'sessionId', 'sender', 'sequenceNumber', 'candidates', 'isComplete', 'createdAt'
+              ])
+              && request.resource.data.batchId == batchId
+              && request.resource.data.sessionId == sessionId
+              && request.resource.data.sender in ['web', 'android']
+              && request.resource.data.sequenceNumber is int
+              && request.resource.data.sequenceNumber >= 0
+              && request.resource.data.candidates is list
+              && request.resource.data.candidates.size() <= 25
+              && request.resource.data.isComplete is bool
+              && request.resource.data.createdAt == request.time;
+
+            allow update, delete: if false;
+          }
+        }
+      }
+    }
+
+    // ─── Default Lock: All other collections denied ───────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

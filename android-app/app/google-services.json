@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "1000533612172",
+    "project_id": "virux-504a5",
+    "storage_bucket": "virux-504a5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1000533612172:android:f0c467defdec953c92cda9",
+        "android_client_info": {
+          "package_name": "com.virux.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1000533612172-kn7pous1br37bfdel9642evaqkrhdcam.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.virux.app",
+            "certificate_hash": "34dcb5c97df933a7114b0df5a34ad3368ad1c309"
+          }
+        },
+        {
+          "client_id": "1000533612172-io7kq6sqkaip3s17hmc41ti6bgopu37e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDlweFonbJffApLu2VqDRYRfUiGtbdh4O4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1000533612172-io7kq6sqkaip3s17hmc41ti6bgopu37e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
