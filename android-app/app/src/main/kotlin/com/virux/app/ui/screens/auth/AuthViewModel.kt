@@ -48,6 +48,23 @@ class AuthViewModel(
         }
     }
 
+    fun signInWithGoogle(idToken: String) {
+        _uiState.value = AuthUiState.Loading
+        viewModelScope.launch {
+            repository.signInWithGoogle(idToken)
+                .onSuccess { user ->
+                    _uiState.value = AuthUiState.Success(user)
+                }
+                .onFailure { error ->
+                    _uiState.value = AuthUiState.Error(error.message ?: "Google Sign-In failed.")
+                }
+        }
+    }
+
+    fun setAuthError(message: String) {
+        _uiState.value = AuthUiState.Error(message)
+    }
+
     fun register(email: String, pass: String, confirmPass: String, displayName: String, acceptTerms: Boolean) {
         if (displayName.isBlank()) {
             _uiState.value = AuthUiState.Error("Please enter your full name.")

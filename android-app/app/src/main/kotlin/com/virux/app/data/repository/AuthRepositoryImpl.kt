@@ -3,6 +3,7 @@ package com.virux.app.data.repository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -44,6 +45,21 @@ class AuthRepositoryImpl(
 
                 // Ensure Firestore profile synchronization
                 syncUserProfile(user)
+                Result.success(user)
+            } catch (e: Exception) {
+                Result.failure(Exception(mapAuthException(e)))
+            }
+        }
+
+    override suspend fun signInWithGoogle(idToken: String): Result<FirebaseUser> =
+        withContext(Dispatchers.IO) {
+            try {
+                val credential = GoogleAuthProvider.getCredential(idToken, null)
+                val authResult = auth.signInWithCredential(credential).await()
+                val user = authResult.user
+                    ?: return@withContext Result.failure(Exception("Google authentication failed: No user object returned."))
+
+                syncUserProfile(user, displayName = user.displayName, provider = "google")
                 Result.success(user)
             } catch (e: Exception) {
                 Result.failure(Exception(mapAuthException(e)))

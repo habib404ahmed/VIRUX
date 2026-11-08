@@ -1,5 +1,8 @@
 package com.virux.app.ui.screens.auth
 
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -27,6 +31,11 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
+import com.google.android.gms.common.api.ApiException
+import com.virux.app.R
 import com.virux.app.ui.components.ViruxButton
 import com.virux.app.ui.components.ViruxButtonVariant
 import com.virux.app.ui.components.ViruxCard
@@ -43,12 +52,63 @@ fun LoginScreen(
     val spacing = ViruxTheme.spacing
     val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
+    val context = LocalContext.current
 
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
 
     val uiState by viewModel.uiState.collectAsState()
+
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val idToken = account?.idToken
+            if (!idToken.isNullOrBlank()) {
+                Log.d("VIRUX_AUTH", "Google Sign-In account selected: ${account.email}, authenticating with Firebase...")
+                viewModel.signInWithGoogle(idToken)
+            } else {
+                Log.e("VIRUX_AUTH", "Google Sign-In failed: idToken is null or blank.")
+                viewModel.setAuthError("Google Sign-In failed: ID token not received.")
+            }
+        } catch (e: ApiException) {
+            val statusCode = e.statusCode
+            val statusString = GoogleSignInStatusCodes.getStatusCodeString(statusCode)
+            Log.e("VIRUX_AUTH", "Google Sign-In ApiException: code=$statusCode ($statusString), msg=${e.message}")
+            if (statusCode == GoogleSignInStatusCodes.SIGN_IN_CANCELLED) {
+                Log.i("VIRUX_AUTH", "Google Sign-In was cancelled by user.")
+            } else {
+                val errorMessage = when (statusCode) {
+                    10 -> "Google Sign-In Developer Error (10): Verify SHA-1 fingerprint registration."
+                    12500 -> "Google Sign-In configuration error (12500). Please check Google Play Services."
+                    7 -> "Network error during Google Sign-In. Please check your connection."
+                    else -> "Google Sign-In failed (${statusCode}: $statusString)"
+                }
+                viewModel.setAuthError(errorMessage)
+            }
+        } catch (e: Exception) {
+            Log.e("VIRUX_AUTH", "Unexpected error during Google Sign-In", e)
+            viewModel.setAuthError("Unexpected error during Google Sign-In: ${e.message}")
+        }
+    }
+
+    val gso = remember {
+        val webClientId = try {
+            context.getString(R.string.default_web_client_id)
+        } catch (e: Exception) {
+            "1000533612172-io7kq6sqkaip3s17hmc41ti6bgopu37e.apps.googleusercontent.com"
+        }
+        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(webClientId)
+            .requestEmail()
+            .build()
+    }
+    val googleSignInClient = remember {
+        GoogleSignIn.getClient(context, gso)
+    }
 
     LaunchedEffect(uiState) {
         if (uiState is AuthUiState.Success) {
@@ -280,14 +340,24 @@ fun LoginScreen(
                         }
 
                         // Google Sign-In Button
+                        val isAuthLoading = uiState is AuthUiState.Loading
                         Surface(
                             color = colors.background,
                             shape = RoundedCornerShape(12.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, colors.border),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    // Google sign-in configuration handler
+                                .clickable(enabled = !isAuthLoading) {
+                                    focusManager.clearFocus()
+                                    Log.d("VIRUX_AUTH", "Continue with Google tapped. Launching Google Sign-In intent...")
+                                    try {
+                                        googleSignInClient.signOut().addOnCompleteListener {
+                                            googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e("VIRUX_AUTH", "Failed to launch Google Sign-In intent", e)
+                                        viewModel.setAuthError("Failed to launch Google Sign-In: ${e.message}")
+                                    }
                                 }
                         ) {
                             Row(
@@ -295,12 +365,27 @@ fun LoginScreen(
                                 horizontalArrangement = Arrangement.Center,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = "Continue with Google",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = colors.textPrimary
-                                )
+                                if (isAuthLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = colors.accent,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Connecting with Google...",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = colors.textSecondary
+                                    )
+                                } else {
+                                    Text(
+                                        text = "Continue with Google",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = colors.textPrimary
+                                    )
+                                }
                             }
                         }
                     }

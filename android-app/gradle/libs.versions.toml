@@ -17,6 +17,7 @@ concurrentFutures = "1.2.0"
 # Firebase BOM — always pin a BOM to control all Firebase versions together
 firebaseBom = "33.7.0"
 googleServices = "4.4.2"
+playServicesAuth = "21.3.0"
 streamWebRtc = "1.3.8"
 
 [libraries]
@@ -62,6 +63,7 @@ firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.r
 firebase-auth = { group = "com.google.firebase", name = "firebase-auth" }
 firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+play-services-auth = { group = "com.google.android.gms", name = "play-services-auth", version.ref = "playServicesAuth" }
 
 # WebRTC Native Runtime
 stream-webrtc-android = { group = "io.getstream", name = "stream-webrtc-android", version.ref = "streamWebRtc" }

@@ -12,6 +12,8 @@ interface AuthRepository {
 
     suspend fun signInWithEmail(email: String, pass: String): Result<FirebaseUser>
 
+    suspend fun signInWithGoogle(idToken: String): Result<FirebaseUser>
+
     suspend fun signUpWithEmail(
         email: String,
         pass: String,
