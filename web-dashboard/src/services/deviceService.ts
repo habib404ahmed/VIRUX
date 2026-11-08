@@ -7,6 +7,7 @@ import {
   doc,
   collection,
   setDoc,
+  getDoc,
   updateDoc,
   deleteDoc,
   onSnapshot,
@@ -106,6 +107,93 @@ function derToP1363(der: Uint8Array): Uint8Array {
   return p1363
 }
 
+// ─── Cryptographic & Timeout Utilities ──────────────────────────────
+
+export const FIRESTORE_WRITE_TIMEOUT_MS = 10_000 // 10-second bounded timeout
+
+/**
+ * Executes a promise with a bounded timeout, rejecting with deadline-exceeded if ms expires.
+ */
+export async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number = FIRESTORE_WRITE_TIMEOUT_MS,
+  errorMsg = 'Operation timed out while waiting for server response.'
+): Promise<T> {
+  let timer: any
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(errorMsg) as any
+      err.code = 'deadline-exceeded'
+      reject(err)
+    }, ms)
+  })
+
+  try {
+    return await Promise.race([promise, timeoutPromise])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Returns the cryptographically secure Crypto interface, verifying secure context.
+ * Throws explicit errors for insecure origin or missing APIs.
+ */
+export function getWebCrypto(): Crypto {
+  if (typeof window !== 'undefined') {
+    if (window.isSecureContext === false) {
+      throw new Error(
+        'Web Crypto requires a secure context (HTTPS or localhost). Insecure origin detected.'
+      )
+    }
+    if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+      return window.crypto
+    }
+  }
+  if (typeof globalThis !== 'undefined' && globalThis.crypto) {
+    return globalThis.crypto as unknown as Crypto
+  }
+  throw new Error(
+    'Web Crypto API is not available in this browser environment. Secure random generation failed.'
+  )
+}
+
+/**
+ * Returns SubtleCrypto from Web Crypto, verifying availability.
+ */
+export function getSubtleCrypto(): SubtleCrypto {
+  const cryptoObj = getWebCrypto()
+  if (!cryptoObj.subtle) {
+    throw new Error(
+      'Web Crypto SubtleCrypto is not available in this browser environment.'
+    )
+  }
+  return cryptoObj.subtle
+}
+
+/**
+ * Generates a 256-bit (32 bytes) cryptographically secure random challenge nonce (64 hex chars).
+ * Never uses Math.random().
+ */
+export function generate256BitChallengeNonce(): string {
+  const cryptoObj = getWebCrypto()
+  const challengeArray = new Uint8Array(32)
+  cryptoObj.getRandomValues(challengeArray)
+  return Array.from(challengeArray, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * Generates a cryptographically secure 6-digit numeric PIN code [100000, 999999].
+ * Never uses Math.random().
+ */
+export function generateSecurePin(): string {
+  const cryptoObj = getWebCrypto()
+  const array = new Uint32Array(1)
+  cryptoObj.getRandomValues(array)
+  const pinNum = 100000 + (array[0] % 900000)
+  return pinNum.toString()
+}
+
 /**
  * Verifies the ECDSA P-256 signature produced by the Android Keystore
  * over the SHA-256 hash of (challengeNonce || sessionId || ownerUid || deviceId).
@@ -124,11 +212,13 @@ export async function verifyDeviceSignature(
       return false
     }
 
+    const subtle = getSubtleCrypto()
+
     // 1. Decode Base64 public key (SPKI DER)
     const pubKeyBinary = Uint8Array.from(atob(devicePublicKeyBase64), (c) => c.charCodeAt(0))
 
     // 2. Import public key into Web Crypto API
-    const cryptoKey = await window.crypto.subtle.importKey(
+    const cryptoKey = await subtle.importKey(
       'spki',
       pubKeyBinary.buffer as ArrayBuffer,
       {
@@ -143,12 +233,12 @@ export async function verifyDeviceSignature(
     const sigBinary = Uint8Array.from(atob(signatureBase64), (c) => c.charCodeAt(0))
     const p1363Signature = derToP1363(sigBinary)
 
-    // 4. Construct challenge payload buffer: challengeNonce || sessionId || ownerUid || deviceId
+    // 4. Construct canonical challenge payload: challengeNonce || sessionId || ownerUid || deviceId
     const messageString = `${challengeNonce}${sessionId}${ownerUid}${deviceId}`
     const messageBuffer = new TextEncoder().encode(messageString)
 
     // 5. Verify signature with ECDSA / SHA-256
-    const isValid = await window.crypto.subtle.verify(
+    const isValid = await subtle.verify(
       {
         name: 'ECDSA',
         hash: { name: 'SHA-256' },
@@ -169,10 +259,19 @@ export async function verifyDeviceSignature(
  * Initiates a new secure pairing session.
  * Stores document in users/{uid}/pairingSessions/{sessionId}
  * Generates an SVG/Canvas QR Code data URL.
+ * Bounded by a 10-second timeout to prevent indefinite pending writes.
  */
 export async function createPairingSession(
-  ownerUid: string
+  ownerUid: string,
+  customChallengeNonce?: string,
+  customPin?: string
 ): Promise<{ session: PairingSessionDocument; qrDataUrl: string }> {
+  if (!ownerUid || typeof ownerUid !== 'string' || ownerUid.trim().length === 0) {
+    const err = new Error('User must be authenticated to create a pairing session.') as any
+    err.code = 'unauthenticated'
+    throw err
+  }
+
   let db: any = null
   try {
     db = requireDb()
@@ -180,14 +279,12 @@ export async function createPairingSession(
     console.warn('[VIRUX DeviceService] Firestore unavailable, generating session in offline sandbox mode.')
   }
 
-  const sessionId = crypto.randomUUID()
-  const pin = Math.floor(100000 + Math.random() * 900000).toString()
+  const cryptoObj = getWebCrypto()
+  const sessionId = typeof cryptoObj.randomUUID === 'function' ? cryptoObj.randomUUID() : Array.from(new Uint8Array(16), (b) => b.toString(16).padStart(2, '0')).join('')
+  const pin = customPin || generateSecurePin()
+  const challengeNonce = customChallengeNonce || generate256BitChallengeNonce()
 
-  // Generate 256-bit cryptographically secure random challenge
-  const challengeArray = new Uint8Array(32)
-  window.crypto.getRandomValues(challengeArray)
-  const challengeNonce = Array.from(challengeArray, (b) => b.toString(16).padStart(2, '0')).join('')
-
+  // 10-minute session TTL (600s), fully compliant with Firestore rule: <= request.time + 630s
   const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000)
 
   const sessionDoc: PairingSessionDocument = {
@@ -202,7 +299,11 @@ export async function createPairingSession(
 
   if (db) {
     const sessionRef = doc(db, 'users', ownerUid, 'pairingSessions', sessionId)
-    await setDoc(sessionRef, sessionDoc)
+    await withTimeout(
+      setDoc(sessionRef, sessionDoc),
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      'Timed out writing pairing session to Firestore. Server may be unreachable.'
+    )
   }
 
   const payload: QRPairingPayload = {
@@ -228,6 +329,33 @@ export async function createPairingSession(
     session: sessionDoc,
     qrDataUrl,
   }
+}
+
+/**
+ * Checks if a pairing session already exists in Firestore.
+ * Useful before retrying after a timeout to prevent duplicate sessions.
+ */
+export async function checkExistingPairingSession(
+  ownerUid: string,
+  sessionId: string
+): Promise<PairingSessionDocument | null> {
+  let db: any = null
+  try {
+    db = requireDb()
+  } catch {
+    return null
+  }
+
+  try {
+    const sessionRef = doc(db, 'users', ownerUid, 'pairingSessions', sessionId)
+    const snap = await withTimeout(getDoc(sessionRef), 5000, 'Timed out checking existing session.')
+    if (snap.exists()) {
+      return snap.data() as PairingSessionDocument
+    }
+  } catch (err) {
+    console.warn('[VIRUX DeviceService] Check existing session error:', err)
+  }
+  return null
 }
 
 /**
@@ -265,6 +393,7 @@ export function listenToPairingSession(
 
 /**
  * Revokes / cancels an active pairing session.
+ * Bounded by timeout to avoid hanging during modal teardown.
  */
 export async function cancelPairingSession(ownerUid: string, sessionId: string): Promise<void> {
   let db: any = null
@@ -274,11 +403,19 @@ export async function cancelPairingSession(ownerUid: string, sessionId: string):
     return
   }
 
-  const sessionRef = doc(db, 'users', ownerUid, 'pairingSessions', sessionId)
-  await updateDoc(sessionRef, {
-    status: 'revoked',
-    revokedAt: serverTimestamp(),
-  })
+  try {
+    const sessionRef = doc(db, 'users', ownerUid, 'pairingSessions', sessionId)
+    await withTimeout(
+      updateDoc(sessionRef, {
+        status: 'revoked',
+        revokedAt: serverTimestamp(),
+      }),
+      5000,
+      'Timed out revoking pairing session.'
+    )
+  } catch (err) {
+    console.warn('[VIRUX DeviceService] Failed to revoke session:', err)
+  }
 }
 
 /**
